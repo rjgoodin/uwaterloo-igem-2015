@@ -1,10 +1,13 @@
 ;; ----- DECLARATIONS -----
+;; use arrays
+extensions [array]
+
 ;; Create "breed" of 'turtle' called cell
 breed [cells cell]          ;; eventually separate mesophyll?
 breed [vasculars vascular]  ;; phloem vascular bundles 
 
 ;; Create "breed" of 'link' called phloem
-directed-link-breed [phloems phloem]  
+undirected-link-breed [phloems phloem]  
 ;; Note: I know there shouldn't be an s, but it wanted a different plural :(
 undirected-link-breed [plasmodesmata plasmodesma]
 
@@ -13,17 +16,19 @@ globals
 [
   num-infected   ;; keep track of number infected
   num-viruses    ;; keep track of the viral particles
-  mod-num-viruses  ;; keep track of the modified viral particles
-  lysed-cells    ;; keep track of apoptotic cells
+  mod-num-viruses ;; keep track of the modified viral particles
+  lysed-cells     ;; keep track of apoptotic cells
+  infect-per-leaf ;; array of infection counts
+  mod-infect-per-leaf ;; array of mod-infection counts
 ]
 
 ;; Declare the cell-specific (turtle breed) variables
-cells-own
+turtles-own
 [
   infected?         ;; if true, the cell is infectious
   resistant?        ;; if true, cell can't be infected
   num-plasmodesmata ;; number of connections with other cells
-  copy-number       ;; track the number of genomes in the nucleus
+  copy-number       ;; track the number of genomes in the nucleus   ;;; not used currently
   pregenomes        ;; track the number of pregenomes in the cell
   protein-six       ;; track functional P6
   viral-count       ;; keeps track of the virions produced by the cell
@@ -31,6 +36,7 @@ cells-own
   mod-pregenomes    ;; as above with delta-P6
   mod-viral-count   ;; as above with delta-P6
   sar-level         ;; amount of "salicylic acid" present in the cell
+  leaf              ;; leaf number
 ]
 
 
@@ -40,13 +46,15 @@ cells-own
 ;; Setup procedures
 to setup
   clear-all    ;; remove anything from previous runs
-  setup-stem   ;; make a stem structure to connect the leaves
   setup-cells  ;; set up the cells
-  setup-leaf   ;; set up the connections between cells
+ ; setup-stem   ;; make a stem structure
+  setup-leaf   ;; set up the connections between cells and connect the stems
+  set infect-per-leaf array:from-list n-values num-leaves [0] ;; initialize as 1xn array of 0's
+  set mod-infect-per-leaf array:from-list n-values num-leaves [0] ;; initialize as 1xn array of 0's
   ask n-of initial-infection-sites cells   ;; infect this number of cells
     [ 
       become-infected 
-      set copy-number founder-population-viruses ;; start with x genomes per infected cell
+      set viral-count founder-population-viruses ;; start with x genomes per infected cell
     ]
   ask links [ set color white ]  ;; make the symplastic connections white
   ask phloems 
@@ -55,86 +63,152 @@ to setup
       set thickness 0.3
     ]
   reset-ticks  ;; reset timer from previous run
+  if file-exists? "netlogo_out.csv" [file-delete "netlogo_out.csv"]  ;; clean slate for output
 end
 
-to setup-stem
+
+to setup-cells
+  set-default-shape cells "circle"   ;; uses circle shape for displayed cells
+  let cells-per-leaf floor (num-cells / num-leaves)
+  let extra-cells remainder num-cells num-leaves
+  let angular-spacing 10 ;; degrees between leaves
+  if angular-spacing * num-leaves > 360   ;; throw an error if the leaves don't fit
+   [ error "Not enough space for leaves"]
+  let leaf-angle (360 - angular-spacing * num-leaves) / num-leaves ;; angular width per leaf
+  let rmin 0.1 * max-pxcor  ;; minimum distrance from the origin
+  let rmax min list max-pxcor max-pycor  ;; max distance -- 
+  
+  foreach n-values  extra-cells [?]  ;; ? here is just identity, making n-values 0:n-1
+  [create-cells cells-per-leaf + 1 ;; 
+    [
+    set size 0.5            ;; netlogo is a freak, so '?' == loop iteration - 1
+    let theta (? * (leaf-angle + angular-spacing)) + random-float leaf-angle  
+    let r random-radius rmin rmax
+    let x r * cos(theta)
+    let y r * sin(theta)
+    setxy x y
+    set leaf ? ;; leaf number = loop iteration, starting from 0.
+    become-susceptible
+    ]
+   ]   
+  ;; now do it again for leaves without extra cells 
+  foreach n-values  (num-leaves - extra-cells) [? + extra-cells]  ;; ? here is just identity, making n-values 0:n-1
+  [create-cells cells-per-leaf ;; 
+    [
+    set size 0.5            ;; netlogo is a freak, so '?' == loop iteration - 1
+    let theta (? * (leaf-angle + angular-spacing)) + random-float leaf-angle  
+    let r random-radius rmin rmax
+    let x r * cos(theta)
+    let y r * sin(theta)
+    setxy x y
+    set leaf ?  ;; Leaf number = iteration
+    become-susceptible
+    ]
+   ] 
+  ;; ---- also set up the stems here, since we use the same local variables
+  
   set-default-shape vasculars "plant" ;; uses stem-looking shape for vasculature
   ;; Create and position vascular cells
-  create-vasculars 1 [ setxy 0 -16 ]
-  create-vasculars 1 
-  [ 
-    setxy 0 -6 
-    create-phloem-from vascular 0 ;; directed stem connection
-  ]
-  create-vasculars 1 
-  [ 
-    setxy 0 6 
-    create-phloem-from vascular 1 ;; directed stem connection
-  ]
-  create-vasculars 1 
-  [ 
-    setxy 0 16 
-    create-phloem-from vascular 2 ;; directed stem connection
+  create-vasculars num-leaves + 1 ;; one central vascular, plus one per leaf
+  ;; vasculature numbeing starts at num-cells -- each turtle has separate number
+  ask vascular num-cells
+  [become-susceptible]
+  foreach n-values num-leaves [?] 
+  [ ask vascular (? + 1 + num-cells)
+    [
+      let r (rmin + rmax) / 2 
+      let theta (? * (leaf-angle + angular-spacing)) + leaf-angle / 2 
+      setxy (r * cos(theta)) (r * sin(theta))
+      create-phloem-with vascular num-cells   ;; connect to central stem
+      ;; Connect to a cell in your own leaf
+      let choice ( one-of (cells with [leaf = ?]) )
+      if choice != nobody [ create-phloem-with choice ]
+      become-susceptible
+    ]
   ]
   ask vasculars         ;; make the vasculature stand out from the leaf cells
     [ 
       set color green 
       set size 2.5
-    ]
+    ] 
 end
 
-to setup-cells
-  set-default-shape cells "circle"   ;; uses circle shape for displayed cells
-  create-cells num-cells
-  [
-    let xguess random-pxcor
-    while [abs xguess < 0.1 * max-pxcor or abs xguess > 0.95 * max-pxcor]
-      [set xguess random-pxcor]
-      
-     let yguess random-pycor
-    while [abs yguess < 0.1 * max-pycor or abs yguess > 0.95 * max-pycor]
-      [set yguess random-pycor] 
-      
-    setxy xguess yguess ;; no nodes too close to edges
-    become-susceptible
-    ask cells [ set size 0.5 ]       ;; makes the circles smaller for larger scale
-  ]
+to-report random-radius [rmin rmax]
+  ;; picks a radius at random such that points will be uniform in a circle
+  ;; pdf is r/const ; use inverse transform method
+  let u random-float 1
+  let r sqrt(u * (rmax ^ 2 - rmin ^ 2) + rmin ^ 2 )
+  report r
 end
+
+;to setup-stem
+;  set-default-shape vasculars "plant" ;; uses stem-looking shape for vasculature
+;  ;; Create and position vascular cells
+;  create-vasculars num-leaves
+;  foreach n-values num-leaves [?] 
+;  [ set 
+;  create-vasculars 1 [ setxy 0 -16 ]
+;  create-vasculars 1 
+;  [ 
+;    setxy 0 -6 
+;    create-phloem-from vascular 0 ;; directed stem connection
+;  ]
+;  create-vasculars 1 
+;  [ 
+;    setxy 0 6 
+;    create-phloem-from vascular 1 ;; directed stem connection
+;  ]
+;  create-vasculars 1 
+;  [ 
+;    setxy 0 16 
+;    create-phloem-from vascular 2 ;; directed stem connection
+;  ]
+;  ask vasculars         ;; make the vasculature stand out from the leaf cells
+;    [ 
+;      set color green 
+;      set size 2.5
+;    ]
+;end
 
 to setup-leaf
   ask cells 
   [ 
     ;; using random-possion to give a more realistic distribution of links per cell
+    let my-leaf leaf
     while [ count my-links < random-poisson avg-num-plasmodesmata ]
     [ 
-      let choice (min-one-of (other cells with [not link-neighbor? myself])
+      let choice (min-one-of (other cells with [(not link-neighbor? myself) and leaf = my-leaf])
                               [distance myself])
       if choice != nobody [ create-plasmodesma-with choice ]
     ]
   ]
   ;; to make the network look nicer
-  repeat 10 [ layout-spring turtles links 0.3 (world-width / (sqrt num-cells)) 1 ]
-  ;; connect leaves to the vasculature
-  ask vascular 0 
-  [ 
-    let choice ( one-of (cells with [pxcor < 0 and pycor < 0]) )
-    if choice != nobody [ create-phloem-from choice ]
-  ]
-  ask vascular 1 
-  [ 
-    let choice ( one-of (cells with [pxcor > 0 and pycor < 0]) )
-    if choice != nobody [ create-phloem-from choice ]
-  ]
-  ask vascular 2 
-  [ 
-    let choice ( one-of (cells with [pxcor < 0 and pycor > 0]) )
-    if choice != nobody [ create-phloem-from choice ]
-  ]
-  ask vascular 3
-  [ 
-    let choice ( one-of (cells with [pxcor > 0 and pycor > 0]) )
-    if choice != nobody [ create-phloem-from choice ]
-  ]
+;;repeat 10 [ layout-spring turtles links 0.3 (world-width / (sqrt num-cells)) 1 ]
+;  ;; connect leaves to the vasculature
+;  ask vascular 0 
+;  [ 
+;    let choice ( one-of (cells with [leaf = 1]) )
+;    if choice != nobody [ create-phloem-from choice ]
+;    become-susceptible
+;  ]
+;  ask vascular 1 
+;  [ 
+;    let choice ( one-of (cells with [pxcor > 0 and pycor < 0]) )
+;    if choice != nobody [ create-phloem-from choice ]
+;    become-susceptible
+;  ]
+;  ask vascular 2 
+;  [ 
+;    let choice ( one-of (cells with [pxcor < 0 and pycor > 0]) )
+;    if choice != nobody [ create-phloem-from choice ]
+;    become-susceptible
+;  ]
+;  ask vascular 3
+;  [ 
+;    let choice ( one-of (cells with [pxcor > 0 and pycor > 0]) )
+;    if choice != nobody [ create-phloem-from choice ]
+;    become-susceptible
+;  ]
 end
 
 
@@ -165,12 +239,28 @@ to go
   
   ;; otherwise, continue to spread the virus
   spread-virus
-  spread-sar
-  do-apoptosis-checks
+ ; spread-sar
+  ;do-apoptosis-checks
+  record-data
   tick
 end
 
+;; ----- DATA OUTPUT -----
 
+to record-data
+  file-open "netlogo_out.csv"
+  let leaf-infect-list array:to-list infect-per-leaf
+  foreach leaf-infect-list  ;; iterate through this list
+  [ file-write ?            ;; type number then comma
+    file-type ","]
+  file-type " ,"            ;; next set of columns: mod infections
+  let mod-leaf-infect-list array:to-list mod-infect-per-leaf
+  foreach mod-leaf-infect-list  ;; iterate through this list
+  [ file-write ?            ;; type number then comma
+    file-type ","]
+  file-type "\n"            ;; newline
+  file-close                ;; apparently bad things happen if you don't
+end
 
 
 ;;  ----- CELL PROCEDURES -----
@@ -185,6 +275,7 @@ to become-infected
   ;set viral-count 0 ; new-viruses
   set copy-number copy-number + 1
   set num-viruses num-viruses + 1
+  array:set infect-per-leaf leaf (array:item infect-per-leaf leaf + 1) ;; increment counter
 end
 
 to mod-become-infected
@@ -193,6 +284,7 @@ to mod-become-infected
   set color red
   set mod-copy-number copy-number + 1
   set mod-num-viruses mod-num-viruses + 1
+  array:set mod-infect-per-leaf leaf (array:item mod-infect-per-leaf leaf + 1) ;; increment counter
 end
 
 to become-susceptible
@@ -269,9 +361,9 @@ end
 
 ;; Procedure governing spread to neighbouring cells
 to spread-virus
-  ask cells with [infected?]
+  ask turtles with [infected?]
     [ 
-      if (viral-count + mod-viral-count > 500)
+      if (viral-count + mod-viral-count > -1)
         [
           ask link-neighbors with [not resistant? and not infected?]
             [ 
@@ -382,8 +474,8 @@ SLIDER
 num-cells
 num-cells
 1
-1000
-275
+300
+271
 1
 1
 NIL
@@ -448,7 +540,7 @@ viral-spread-chance
 viral-spread-chance
 1
 20
-9
+5
 0.5
 1
 NIL
@@ -463,7 +555,7 @@ num-ticks
 num-ticks
 0
 500
-167
+430
 1
 1
 NIL
@@ -476,7 +568,7 @@ SWITCH
 223
 specified-duration
 specified-duration
-1
+0
 1
 -1000
 
@@ -505,10 +597,10 @@ SLIDER
 174
 founder-population-viruses
 founder-population-viruses
-1
-30
+400
+600
+440
 10
-1
 1
 NIL
 HORIZONTAL
@@ -556,6 +648,21 @@ resistance-threshold
 1
 100
 89
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+24
+327
+196
+360
+num-leaves
+num-leaves
+1
+10
+5
 1
 1
 NIL
