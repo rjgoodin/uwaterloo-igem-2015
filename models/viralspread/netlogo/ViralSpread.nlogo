@@ -11,6 +11,8 @@ undirected-link-breed [phloems phloem]
 ;; Note: I know there shouldn't be an s, but it wanted a different plural :(
 undirected-link-breed [plasmodesmata plasmodesma]
 
+directed-link-breed [tests test] 
+
 ;; Declare global variables
 globals
 [
@@ -45,13 +47,13 @@ turtles-own
 
 ;; Setup procedures
 to setup
-  clear-all    ;; remove anything from previous runs
-  setup-cells  ;; set up the cells
- ; setup-stem   ;; make a stem structure
-  setup-leaf   ;; set up the connections between cells and connect the stems
+  clear-all     ;; remove anything from previous runs
+  random-seed 1 ;; consistent seed for reproducibility -- useful in debugging & screenshots
+  setup-cells   ;; set up the cells and group them in leaves
+  setup-leaf    ;; set up the connections between cells and connect the stems
   set infect-per-leaf array:from-list n-values num-leaves [0] ;; initialize as 1xn array of 0's
   set mod-infect-per-leaf array:from-list n-values num-leaves [0] ;; initialize as 1xn array of 0's
-  ask n-of initial-infection-sites cells   ;; infect this number of cells
+  ask n-of initial-infection-sites cells with [leaf = 0]  ;; infect this number of cells
     [ 
       become-infected 
       set viral-count founder-population-viruses ;; start with x genomes per infected cell
@@ -133,6 +135,7 @@ to setup-cells
     ] 
 end
 
+;; --- helper function to pick a radius that ensures unifom distribution --- 
 to-report random-radius [rmin rmax]
   ;; picks a radius at random such that points will be uniform in a circle
   ;; pdf is r/const ; use inverse transform method
@@ -141,34 +144,7 @@ to-report random-radius [rmin rmax]
   report r
 end
 
-;to setup-stem
-;  set-default-shape vasculars "plant" ;; uses stem-looking shape for vasculature
-;  ;; Create and position vascular cells
-;  create-vasculars num-leaves
-;  foreach n-values num-leaves [?] 
-;  [ set 
-;  create-vasculars 1 [ setxy 0 -16 ]
-;  create-vasculars 1 
-;  [ 
-;    setxy 0 -6 
-;    create-phloem-from vascular 0 ;; directed stem connection
-;  ]
-;  create-vasculars 1 
-;  [ 
-;    setxy 0 6 
-;    create-phloem-from vascular 1 ;; directed stem connection
-;  ]
-;  create-vasculars 1 
-;  [ 
-;    setxy 0 16 
-;    create-phloem-from vascular 2 ;; directed stem connection
-;  ]
-;  ask vasculars         ;; make the vasculature stand out from the leaf cells
-;    [ 
-;      set color green 
-;      set size 2.5
-;    ]
-;end
+
 
 to setup-leaf
   ask cells 
@@ -183,34 +159,8 @@ to setup-leaf
     ]
   ]
   ;; to make the network look nicer
-;;repeat 10 [ layout-spring turtles links 0.3 (world-width / (sqrt num-cells)) 1 ]
-;  ;; connect leaves to the vasculature
-;  ask vascular 0 
-;  [ 
-;    let choice ( one-of (cells with [leaf = 1]) )
-;    if choice != nobody [ create-phloem-from choice ]
-;    become-susceptible
-;  ]
-;  ask vascular 1 
-;  [ 
-;    let choice ( one-of (cells with [pxcor > 0 and pycor < 0]) )
-;    if choice != nobody [ create-phloem-from choice ]
-;    become-susceptible
-;  ]
-;  ask vascular 2 
-;  [ 
-;    let choice ( one-of (cells with [pxcor < 0 and pycor > 0]) )
-;    if choice != nobody [ create-phloem-from choice ]
-;    become-susceptible
-;  ]
-;  ask vascular 3
-;  [ 
-;    let choice ( one-of (cells with [pxcor > 0 and pycor > 0]) )
-;    if choice != nobody [ create-phloem-from choice ]
-;    become-susceptible
-;  ]
+repeat 10 [ layout-spring turtles links 0.3 (world-width / (sqrt num-cells)) 1 ]
 end
-
 
 
 
@@ -218,7 +168,7 @@ end
 
 ;; This is the main process - what is activated when the user clicks "go"
 to go
-  ;; if the user specified a duration, stop after that
+  ;; if the user specified a duration, stop after that.
   if specified-duration
   [
     if ticks > num-ticks [ stop ] 
@@ -234,13 +184,13 @@ to go
       set i i + 1
       tick
     ]
-    stop  ;; stop model completely
+    stop  
+    ;; stop model completely
   ]
-  
-  ;; otherwise, continue to spread the virus
+    ;; otherwise, continue to spread the virus
   spread-virus
- ; spread-sar
-  ;do-apoptosis-checks
+  spread-sar
+  do-apoptosis-checks
   record-data
   tick
 end
@@ -303,12 +253,21 @@ end
 
 ;; ---- SAR Molecule Spread & Apoptosis ----
 
-;; Increase levels of signalling molecule based on neighbours' levels
-;; Assuming the infected cells are unable to produce sar signal molecules, but 
+;; Signalling molecules are produced (one per tick) by 
+;;     - cells with infected neighbours
+;;     - resistant cells 
+;; Signalling molecules are spread by 
+;;     - resistant cells -- pass on 20% their SAR each tick
+;;     - susceptible cells -- only pass on 10%
+;; - Stems also spread SAR, but don't produce any.
+;; - Infected cells do not produce or pass on SAR, but they can lyse.
+;; NOTE -- don't have an integer # of molecules, since they get split.
 to spread-sar
   ;; initial generation of sar based on neighbouring cells being infected
   ask cells
   [
+    if (any? link-neighbors with [infected?])
+    [ set sar-level sar-level + 1 ]
     let neighboured false           ;; remember if a neighbour is infected
     ask link-neighbors 
     [
@@ -316,28 +275,35 @@ to spread-sar
     ]
     ;; if a neighbour is infected, increase this cell's sar signalling molecule
     if (neighboured) [ set sar-level sar-level + 1 ]
+    if (resistant?) [set sar-level sar-level + 1 ] 
   ]
   ;; assume the resistant cells are better able to spread the sar molecule
-  ask cells with [resistant?]
+  ask turtles with [resistant?]
   [
-    let shared-sar sar-level / 2     ;; saying half the sar-level will be spread
+    let shared-sar sar-level / 5     ;; saying half the sar-level will be spread
+    let num-neighbors (count link-neighbors)
     ask link-neighbors 
     [ 
-      set sar-level sar-level + shared-sar 
-      if sar-level >= resistance-threshold [ set resistant? true ]
+      set sar-level sar-level + shared-sar / num-neighbors 
+      if (sar-level >= resistance-threshold) and (not infected?)
+       [ set resistant? true
+         set color blue ]
     ]
-    set sar-level sar-level + shared-sar / 2  ;; not much kept in the cell
+    set sar-level sar-level - shared-sar ;; take away what we spread
   ]
   ;; assume the susceptible cells can produce an okay amount of sar molecule
-  ask cells with [not infected? and not resistant?]
+  ask turtles with [not infected? and not resistant?]
   [
-    let shared-sar sar-level / 5     ;; fifth of the molecules will be shared
+    let shared-sar sar-level / 10     ;; fifth of the molecules will be shared
+    let num-neighbors (count link-neighbors)
     ask link-neighbors
     [
-      set sar-level sar-level + shared-sar
-      if sar-level >= resistance-threshold [ set resistant? true ]
+      set sar-level sar-level + shared-sar / num-neighbors
+      if (sar-level >= resistance-threshold) and (not infected?)
+       [ set resistant? true
+         set color blue ]
     ]
-    set sar-level sar-level + shared-sar / 2
+    set sar-level sar-level - shared-sar ;; take away what we spread
   ]
 end  
 
@@ -475,7 +441,7 @@ num-cells
 num-cells
 1
 300
-271
+216
 1
 1
 NIL
@@ -490,7 +456,7 @@ avg-num-plasmodesmata
 avg-num-plasmodesmata
 1
 10
-6
+7
 1
 1
 NIL
@@ -540,7 +506,7 @@ viral-spread-chance
 viral-spread-chance
 1
 20
-5
+6.5
 0.5
 1
 NIL
@@ -555,7 +521,7 @@ num-ticks
 num-ticks
 0
 500
-430
+252
 1
 1
 NIL
@@ -614,7 +580,7 @@ lysis-threshold
 lysis-threshold
 1
 10000
-10000
+2294
 1
 1
 NIL
@@ -647,7 +613,7 @@ resistance-threshold
 resistance-threshold
 1
 100
-89
+14
 1
 1
 NIL
@@ -662,7 +628,7 @@ num-leaves
 num-leaves
 1
 10
-5
+7
 1
 1
 NIL
