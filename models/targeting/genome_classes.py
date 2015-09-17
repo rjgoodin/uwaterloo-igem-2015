@@ -7,15 +7,6 @@ from probabilistic import prob_cut, nt_rand, indel
 #   - deletion of a promoter
 #   - deletion of a significant portion of the gene
 
-# TODO
-# - function for cut probability: foo_cut_prob(self.grna, self.target, dt, complex_concentration)
-# - function for cut location: foo_cut_posn()
-# - function for indel type (L/R del, insert) foo_indel(), foo_nt_rand(insert) etc
-# - if repair is big deletion, what do we fill in at the end of the target? cant be random, must come from sequence data
-# - code for deletions
-# - see specific TODOs / 'to be implemented' throughout the code
-# - properly update target.current_start and domain genome repair method
-
 
 class Target(object):
 
@@ -63,7 +54,10 @@ class Target(object):
         return self.shift
 
     def compute_and_assign_cut_probability(self, dt):
-        self.cut_probability = prob_cut(self.grna, self.sequence, self.complex_concentration, dt)
+        grna = self.grna
+        if self.sense == -1:
+            grna = self.convert_sense(grna)
+        self.cut_probability = prob_cut(grna, self.sequence, self.complex_concentration, dt)
         return self.cut_probability
 
     def cut(self):
@@ -95,14 +89,17 @@ class Target(object):
         self.repaired = True
         self.shift += net_indel_size
 
+        # check domain functionality
+        self.domain.update_functionality()
+
 
 class Domain(object):
     # Each Domain may contain targets and belongs to a Genome
 
     def __init__(self, label, domain_start, domain_end, domain_type, genome, promoter=None):
-        assert domain_type in ["orf", "promoter", "ncr"]
+        assert domain_type in ["orf", "promoter", "untracked"]  # note untracked isn't affected by cas9
         self.label = label  # string
-        self.domain_type = domain_type  # 'orf' or 'promoter' or 'ncr'
+        self.domain_type = domain_type  # 'orf' or 'promoter' or 'untracked'
         self.domain_start = domain_start  # int
         self.domain_end = domain_end  # int
         self.promoter = promoter
@@ -110,6 +107,8 @@ class Domain(object):
             # assert promoter is not None
             # for now to test
             if self.promoter is not None:
+                assert type(promoter) is Domain
+                assert promoter.domain_type == 'promoter'
                 self.promoter = promoter  # promoter is a domain too
         self.sequence = None  # to be implemented
         self.functional = True  # bool
@@ -129,13 +128,13 @@ class Domain(object):
 
     def update_functionality(self):
         if self.domain_type == "orf":
-            if (not self.promoter.is_functional()) or (sum(target.get_shift() for target in self.targets.values()) % 3 != 0):
+            if (not self.promoter.functional) or (sum(target.get_shift() for target in self.targets.values()) % 3 != 0):
                 self.functional = False
             else:
                 self.functional = True
         elif self.domain_type == "promoter":  # TODO  how to define functional promoter
             self.functional = True
-        else:  # TODO how to define functional NCR
+        else:  # untracked domains always functional
             self.functional = True
 
     def target_location(self, target_label):
@@ -154,7 +153,7 @@ class Genome(object):
         self.initial_genome = sequence  # string
         self.current_genome = sequence  # string
         self.repaired = True  # bool
-        self.domains = {}  # dict of all domains (ORFs, promoters, NCRs)
+        self.domains = {}  # dict of all domains (ORFs, promoters, untracked secctions)
     
     def add_domain(self, domain):
         assert type(domain) is Domain
@@ -164,7 +163,7 @@ class Genome(object):
         assert type(domain) is Domain
         del self.domains[domain.label]
 
-    def repair_target(self, target):  # TODO pass target instead, clean this method
+    def repair_target(self, target):
         # sample from indel distribution to get left/right deletion sizes and insertion nucleotides
         if target.sense == 1:
             del_left, del_right, insert = indel()  # e.g. 0, 0, 2
@@ -198,7 +197,6 @@ class Genome(object):
                 location -= shift  # shift location to the left
             else:  # if nearest PAM is on right
                 location += shift  # shift location to the right
-        print shift
         return location
 
     def get_targets_from_genome(self):
@@ -301,12 +299,13 @@ class Genome(object):
                 self.domains[domain_label].remove_target(target)
             # else it is just broken
             else:
+                continue
                 # find new pam, set new location, set new sequence
-                new_start = self.find_pam(target.current_start, target.sense)
-                self.domains[domain_label].targets[target.label].current_start = new_start
-                self.domains[domain_label].targets[target.label].sequence = self.current_genome[new_start:new_start+20]
+                # new_start = self.find_pam(target.current_start, target.sense)
+                # self.domains[domain_label].targets[target.label].current_start = new_start
+                # self.domains[domain_label].targets[target.label].sequence = self.current_genome[new_start:new_start+20]
 
-    def large_deletion(self, target1, target2):
+    def large_deletion(self, target1, target2, dt):
         """Delete section between two open targets
         """
         assert not (target1.repaired or target2.repaired)
@@ -325,3 +324,22 @@ class Genome(object):
             # then delete end
             new_genome = self.current_genome[0:middle]
             self.make_new_genome(middle, -(self.length - middle), new_genome)
+        if target1.sense == target2.sense:
+            if location <= target1.current_start <= location + middle:
+                target1.sequence = target1.sequence[3:]
+                target1.sequence = target2.sequence[0:3] + target1.sequence
+                target2.domain.remove_target(target2)
+                target1.cut_position = None
+                target1.repaired = True
+                target1.compute_and_assign_cut_probability(dt)
+                # check domain functionality
+                target1.domain.update_functionality()
+            else:
+                target2.sequence = target2.sequence[3:]
+                target2.sequence = target1.sequence[0:3] + target2.sequence
+                target1.domain.remove_target(target1)
+                target2.cut_position = None
+                target2.repaired = True
+                target2.compute_and_assign_cut_probability(dt)
+                # check domain functionality
+                target2.domain.update_functionality()
